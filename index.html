@@ -1,94 +1,72 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="utf-8" />
-  <title>WebAuthn Device-Binding Demo</title>
+  <meta charset="utf-8">
+  <title>Cross-Browser Passkey Demo</title>
   <style>
-    body  { font-family: system-ui, sans-serif; margin: 2rem; }
-    button{ margin-right: 1rem; padding: 0.5rem 1rem; }
-    #log  { border: 1px solid #ccc; padding: 0.75rem; margin-top: 1rem;
-            white-space: pre-wrap; background: #f9f9f9; height: 220px; overflow: auto; }
+    body{font-family:system-ui,sans-serif;margin:2rem}
+    button{margin:0 1rem 1rem 0;padding:.5rem 1rem}
+    pre{border:1px solid #ccc;padding:.75rem;background:#f9f9f9;height:220px;overflow:auto}
   </style>
 </head>
-
 <body>
-  <h1>WebAuthn Device Binding Demo</h1>
-  <p>
-    This page registers a <strong>resident passkey</strong> on your device and prints the base64-URL
-    credential ID.<br>
-    Open it in <em>any</em> browser on the same device and click <strong>Authenticate</strong>; it
-    should succeed, proving the key is device-wide.
-  </p>
+<h2>Cross-Browser Passkey Demo</h2>
+<p>Register a resident passkey on this device, then open the same URL in another browser on the <em>same</em> machine and click Authenticate.</p>
+<button id="reg">Register&nbsp;Passkey</button>
+<button id="auth">Authenticate</button>
+<pre id="log"></pre>
 
-  <button id="register">Register&nbsp;Passkey</button>
-  <button id="authenticate">Authenticate</button>
+<script type="module">
+  /* ---------- helpers ---------- */
+  const log = (...a)=>document.getElementById('log').textContent+=a.join(' ')+'\n';
+  const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+          .replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  const u8   = b64 => Uint8Array.from(atob(b64.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
 
-  <pre id="log"></pre>
+  /* ---------- simple shared storage via indexedDB ---------- */
+  const DB = await new Promise(r=>{
+    const open=indexedDB.open('passkey-demo',1);
+    open.onupgradeneeded=e=>e.target.result.createObjectStore('store');
+    open.onsuccess=e=>r(e.target.result);
+  });
+  const store = { async put(id){(await DB).transaction('store','readwrite').objectStore('store').put(id,'credId');},
+    async get(){return await new Promise(res=>{
+      const req=DB.transaction('store').objectStore('store').get('credId');
+      req.onsuccess=e=>res(e.target.result);
+    });} };
 
-  <script type="module">
-    /* ---------- helpers: base64url encode/decode ---------- */
-    function b64u(buf) {
-      return btoa(String.fromCharCode(...new Uint8Array(buf)))
-        .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-    }
-    function u8(b64) {
-      const pad = "=".repeat((4 - (b64.length % 4)) % 4);
-      const b64s = (b64 + pad).replace(/-/g, "+").replace(/_/g, "/");
-      return Uint8Array.from(atob(b64s), c => c.charCodeAt(0));
-    }
+  /* ---------- register ---------- */
+  document.getElementById('reg').onclick = async () => {
+    try{
+      const cred = await navigator.credentials.create({
+        publicKey:{
+          rp:{ id:'device-bind-demo.local', name:'Device Bind Demo' },
+          user:{ id:crypto.getRandomValues(new Uint8Array(16)), name:'device', displayName:'device' },
+          pubKeyCredParams:[{alg:-7,type:'public-key'}],
+          authenticatorSelection:{ authenticatorAttachment:'platform', residentKey:'required', userVerification:'preferred' },
+          challenge:crypto.getRandomValues(new Uint8Array(32))
+        }
+      });
+      const id=b64u(cred.rawId);
+      await store.put(id);
+      log('✅ Registered credential ID:',id);
+    }catch(e){log('❌ Registration error:',e);}
+  };
 
-    /* ---------- tiny local-storage “backend” ---------- */
-    const STORE_KEY = "demo_passkey";
-    const logEl = document.getElementById("log");
-    const log = (...a) => (logEl.textContent += a.map(String).join(" ") + "\n");
-
-    /* ---------- register passkey ---------- */
-    document.getElementById("register").addEventListener("click", async () => {
-      try {
-        const cred = await navigator.credentials.create({
-          publicKey: {
-            rp: { name: "Device Bind Demo" },
-            user: {
-              id: crypto.getRandomValues(new Uint8Array(16)),
-              name: "device",
-              displayName: "device"
-            },
-            pubKeyCredParams: [{ alg: -7, type: "public-key" }], // ES256
-            authenticatorSelection: {
-              authenticatorAttachment: "platform",
-              residentKey: "required",
-              userVerification: "preferred"
-            },
-            challenge: crypto.getRandomValues(new Uint8Array(32))
-          }
-        });
-
-        const credId = b64u(cred.rawId);
-        localStorage.setItem(STORE_KEY, credId);
-        log("✅ Registered credential ID:", credId);
-      } catch (err) {
-        log("❌ Registration error:", err);
-      }
-    });
-
-    /* ---------- authenticate ---------- */
-    document.getElementById("authenticate").addEventListener("click", async () => {
-      const credIdB64 = localStorage.getItem(STORE_KEY);
-      if (!credIdB64) return log("⚠️ No credential found. Register first.");
-
-      try {
-        await navigator.credentials.get({
-          publicKey: {
-            challenge: crypto.getRandomValues(new Uint8Array(32)),
-            allowCredentials: [{ id: u8(credIdB64), type: "public-key" }],
-            userVerification: "preferred"
-          }
-        });
-        log("🎉 Authentication successful for credential:", credIdB64);
-      } catch (err) {
-        log("❌ Authentication error:", err);
-      }
-    });
-  </script>
+  /* ---------- authenticate ---------- */
+  document.getElementById('auth').onclick = async () => {
+    try{
+      const assertion = await navigator.credentials.get({
+        publicKey:{
+          rpId:'device-bind-demo.local',
+          challenge:crypto.getRandomValues(new Uint8Array(32)),
+          userVerification:'preferred'
+          /* allowCredentials omitted → let browser pick resident key */
+        }
+      });
+      log('🎉 Auth success. CredentialID:', b64u(assertion.rawId));
+    }catch(e){log('❌ Auth error:',e);}
+  };
+</script>
 </body>
 </html>
